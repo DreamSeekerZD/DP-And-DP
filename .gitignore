@@ -1,0 +1,26 @@
+# 文档不入库（按约定：只推业务代码）
+docs/
+
+# IDE
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# 后端构建产物
+target/
+*.class
+*.jar
+!.mvn/wrapper/maven-wrapper.jar
+
+# 前端
+node_modules/
+dist/
+.vite/
+*.local
+
+# 本地配置与密钥（不要提交）
+.env
+.env.*
+application-local.yml
+*.log
