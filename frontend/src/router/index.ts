@@ -28,6 +28,18 @@ const router = createRouter({
       component: () => import('@/views/performance/PerformanceDetailView.vue'),
     },
     {
+      path: '/orders',
+      name: 'my-orders',
+      component: () => import('@/views/order/MyOrdersView.vue'),
+      meta: { requiresUser: true },
+    },
+    {
+      path: '/orders/:id',
+      name: 'order-detail',
+      component: () => import('@/views/order/OrderDetailView.vue'),
+      meta: { requiresUser: true },
+    },
+    {
       path: '/operator/performances',
       name: 'my-performances',
       component: () => import('@/views/operator/MyPerformancesView.vue'),
@@ -65,6 +77,14 @@ router.beforeEach(async (to) => {
       return { name: 'login', query: { redirect: to.fullPath } }
     }
     // 已登录但不是运营：不展示运营页面，也不暗示这类页面存在
+    return { name: 'not-found' }
+  }
+
+  if (to.meta.requiresUser && !auth.isUser) {
+    if (!auth.isLoggedIn) {
+      return { name: 'login', query: { redirect: to.fullPath } }
+    }
+    // 已登录但不是普通用户（即运营账号）：不展示订单页面
     return { name: 'not-found' }
   }
 

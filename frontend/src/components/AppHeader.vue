@@ -42,6 +42,10 @@ async function handleLogout(): Promise<void> {
         >
           我的发布
         </RouterLink>
+        <!-- 普通用户入口：我的订单 -->
+        <RouterLink v-if="auth.isUser" class="masthead__link" :to="{ name: 'my-orders' }">
+          我的订单
+        </RouterLink>
       </nav>
 
       <div class="masthead__account">

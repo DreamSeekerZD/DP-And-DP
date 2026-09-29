@@ -17,6 +17,7 @@ export const useAuthStore = defineStore('auth', () => {
 
   const isLoggedIn = computed(() => user.value !== null)
   const isOperator = computed(() => user.value?.role === 'OPERATOR')
+  const isUser = computed(() => user.value?.role === 'USER')
 
   /** 取一份新的 CSRF token；写请求发出前若本地没有会自动调用到这里 */
   async function refreshCsrf(): Promise<void> {
@@ -76,6 +77,7 @@ export const useAuthStore = defineStore('auth', () => {
     initialized,
     isLoggedIn,
     isOperator,
+    isUser,
     ensureInitialized,
     login,
     logout,
