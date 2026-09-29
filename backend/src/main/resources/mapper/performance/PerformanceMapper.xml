@@ -1,0 +1,184 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  演出表 SQL。
+
+  约定：
+    * 状态数值固定为 0=DRAFT / 1=PUBLISHED / 2=WITHDRAWN，SQL 里直接用字面量并注释含义，
+      不依赖枚举顺序。
+    * 所有时间列按 UTC 读写；「当前时间」一律用 UTC_TIMESTAMP(3)，不用 NOW()（那是服务器本地时区）。
+    * 写操作都带原状态条件，影响行数为 0 时由服务层判断为并发冲突或状态不符，不能当作成功。
+-->
+<mapper namespace="com.zddp.ticket.performance.mapper.PerformanceMapper">
+
+    <resultMap id="performanceMap" type="com.zddp.ticket.performance.model.entity.Performance">
+        <id column="id" property="id"/>
+        <result column="title" property="title"/>
+        <result column="description" property="description"/>
+        <result column="cover_url" property="coverUrl"/>
+        <result column="venue" property="venue"/>
+        <result column="starts_at" property="startsAt"/>
+        <result column="price_cent" property="priceCent"/>
+        <result column="total_stock" property="totalStock"/>
+        <result column="available_stock" property="availableStock"/>
+        <!-- status 由 MyBatis-Plus 的枚举处理器按 @EnumValue 映射 0/1/2 -->
+        <result column="status" property="status"/>
+        <result column="publisher_id" property="publisherId"/>
+        <result column="published_at" property="publishedAt"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+    </resultMap>
+
+    <sql id="columns">
+        id, title, description, cover_url, venue, starts_at, price_cent,
+        total_stock, available_stock, status, publisher_id, published_at, created_at, updated_at
+    </sql>
+
+    <!-- 数据库当前时间（UTC）。发布校验、下架时间、响应里的 serverTime 都用它。 -->
+    <select id="selectDatabaseNowUtc" resultType="java.time.LocalDateTime">
+        SELECT UTC_TIMESTAMP(3)
+    </select>
+
+    <!--
+      行锁：按 id + 所属运营人员取本人这一行。
+      FOR UPDATE 必须在事务中执行，服务层的编辑/发布/下架方法都标了 @Transactional。
+    -->
+    <select id="selectOwnedForUpdate" resultMap="performanceMap">
+        SELECT
+        <include refid="columns"/>
+        FROM performance
+        WHERE id = #{id}
+        AND publisher_id = #{publisherId}
+        FOR UPDATE
+    </select>
+
+    <insert id="insertPerformance" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO performance (title, description, cover_url, venue, starts_at, price_cent,
+                                 total_stock, available_stock, status, publisher_id, published_at,
+                                 created_at, updated_at)
+        VALUES (#{title}, #{description}, #{coverUrl}, #{venue}, #{startsAt}, #{priceCent},
+                #{totalStock}, #{availableStock}, #{status}, #{publisherId}, #{publishedAt},
+                #{createdAt}, #{updatedAt})
+    </insert>
+
+    <!--
+      草稿整体编辑：显式列出每一列，不用「按对象更新」，
+      这样即使上层对象被塞了额外字段也不会写进数据库。
+      status = 0 是并发保护：若这一行已被并发发布，影响行数为 0。
+    -->
+    <update id="updateDraft">
+        UPDATE performance
+        SET title           = #{title},
+            description     = #{description},
+            cover_url       = #{coverUrl},
+            venue           = #{venue},
+            starts_at       = #{startsAt},
+            price_cent      = #{priceCent},
+            total_stock     = #{totalStock},
+            available_stock = #{availableStock},
+            updated_at      = #{updatedAt}
+        WHERE id = #{id}
+          AND publisher_id = #{publisherId}
+          AND status = 0 /* 0 = DRAFT，只有草稿可以整体编辑 */
+    </update>
+
+    <!--
+      已发布/已下架只允许改介绍与封面。
+      列清单写死，标题、地点、开始时间、价格、总库存、状态、发布时间都不在这里，
+      因此「关键字段发布后不可改」由 SQL 本身保证，而不是只靠服务层判断。
+    -->
+    <update id="updateDisplayFields">
+        UPDATE performance
+        SET description = #{description},
+            cover_url   = #{coverUrl},
+            updated_at  = #{updatedAt}
+        WHERE id = #{id}
+          AND publisher_id = #{publisherId}
+          AND status IN (1, 2) /* 1 = PUBLISHED, 2 = WITHDRAWN */
+    </update>
+
+    <!--
+      首次发布：status 0 -> 1，同时写入发布时间。
+      条件 status = 0 保证发布时间只被写一次，重复发布不会重置它，也不会动库存。
+    -->
+    <update id="publishDraft">
+        UPDATE performance
+        SET status       = 1,
+            published_at = #{publishedAt},
+            updated_at   = #{publishedAt}
+        WHERE id = #{id}
+          AND publisher_id = #{publisherId}
+          AND status = 0 /* 0 = DRAFT，只有草稿可以发布 */
+    </update>
+
+    <!--
+      下架：status 1 -> 2。不撤销已有订单、不回到草稿、不释放库存。
+      条件 status = 1 让重复下架影响行数为 0（幂等），草稿也无法被下架。
+    -->
+    <update id="withdrawPublished">
+        UPDATE performance
+        SET status     = 2,
+            updated_at = #{updatedAt}
+        WHERE id = #{id}
+          AND publisher_id = #{publisherId}
+          AND status = 1 /* 1 = PUBLISHED，只有已发布可以下架 */
+    </update>
+
+    <!-- 公开列表：只返回已发布。已开始、已售罄仍展示，可售性由服务层计算后放在响应里。 -->
+    <select id="selectPublicPage" resultMap="performanceMap">
+        SELECT
+        <include refid="columns"/>
+        FROM performance
+        WHERE status = 1 /* 1 = PUBLISHED */
+        ORDER BY created_at DESC, id DESC
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <select id="countPublic" resultType="long">
+        SELECT COUNT(*)
+        FROM performance
+        WHERE status = 1 /* 1 = PUBLISHED */
+    </select>
+
+    <!-- 公开详情：草稿与已下架查不到，服务层据此返回 404 -->
+    <select id="selectPublicDetail" resultMap="performanceMap">
+        SELECT
+        <include refid="columns"/>
+        FROM performance
+        WHERE id = #{id}
+        AND status = 1 /* 1 = PUBLISHED */
+    </select>
+
+    <!-- 运营列表：只看本人内容；status 为空表示不筛选 -->
+    <select id="selectOwnedPage" resultMap="performanceMap">
+        SELECT
+        <include refid="columns"/>
+        FROM performance
+        WHERE publisher_id = #{publisherId}
+        <if test="status != null">
+            AND status = #{status}
+        </if>
+        ORDER BY created_at DESC, id DESC
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <select id="countOwned" resultType="long">
+        SELECT COUNT(*)
+        FROM performance
+        WHERE publisher_id = #{publisherId}
+        <if test="status != null">
+            AND status = #{status}
+        </if>
+    </select>
+
+    <!-- 运营详情：本人所有状态都可见，他人的查不到（由 publisher_id 条件保证） -->
+    <select id="selectOwnedDetail" resultMap="performanceMap">
+        SELECT
+        <include refid="columns"/>
+        FROM performance
+        WHERE id = #{id}
+        AND publisher_id = #{publisherId}
+    </select>
+
+</mapper>
