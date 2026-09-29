@@ -1,0 +1,144 @@
+/*
+ * 全局样式与设计令牌。
+ *
+ * 方向：票根与戏单的朴素世界 —— 纸面、墨色、印章红。
+ * 不做特效，靠字阶、间距与一条虚线穿孔把层次说清楚。
+ */
+
+:root {
+  /* 墨色：标题与正文主体 */
+  --ink: #171a2b;
+  --ink-soft: #55536b;
+  --ink-faint: #8a8899;
+
+  /* 纸面 */
+  --paper: #f4f4f7;
+  --surface: #ffffff;
+  --line: #e2e1e9;
+
+  /* 唯一的强调色：印章红。只用于价格、主操作与焦点环 */
+  --seal: #a8322a;
+  --seal-dark: #8c2620;
+
+  /* 覆盖 Element Plus 主色，让组件与上面的令牌保持一致 */
+  --el-color-primary: #a8322a;
+  --el-color-primary-light-3: #bd5b54;
+  --el-color-primary-light-5: #ce837e;
+  --el-color-primary-light-7: #dfaca9;
+  --el-color-primary-light-8: #e8c0be;
+  --el-color-primary-light-9: #f1d5d4;
+  --el-color-primary-dark-2: #8c2620;
+
+  --el-font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', 'Hiragino Sans GB',
+    system-ui, -apple-system, 'Segoe UI', sans-serif;
+
+  --radius: 6px;
+  --page-max: 1080px;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--el-font-family);
+  font-size: 14px;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 可见的键盘焦点：不靠 outline: none 把可达性关掉 */
+:focus-visible {
+  outline: 2px solid var(--seal);
+  outline-offset: 2px;
+}
+
+/* 价格、库存、时间等数字统一用等宽数字，避免上下行跳动 */
+.num {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum';
+}
+
+/* 价格：符号小、数字大，是页面上唯一被放大的信息 */
+.price {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 2px;
+  color: var(--seal);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum';
+}
+
+.price__symbol {
+  font-size: 0.75em;
+  font-weight: 600;
+}
+
+.price__value {
+  font-size: 1.5em;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.page {
+  max-width: var(--page-max);
+  margin: 0 auto;
+  padding: 28px 20px 56px;
+}
+
+.page__head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+
+/* 眉题：说明这一屏在看什么，不承担装饰职责 */
+.eyebrow {
+  margin: 0 0 4px;
+  color: var(--ink-faint);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+}
+
+.page__title {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.muted {
+  color: var(--ink-soft);
+}
+
+.faint {
+  color: var(--ink-faint);
+}
+
+/* 票根穿孔：本设计唯一的signature，只出现在演出列表条目上 */
+.perforation {
+  border-left: 2px dashed var(--line);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}
