@@ -113,6 +113,9 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, "/api/performances", "/api/performances/*").permitAll()
                         // 运营接口要求 OPERATOR 角色；普通用户访问得到 403
                         .requestMatchers("/api/operator/**").hasRole("OPERATOR")
+                        // 订单接口要求 USER 角色：运营账号被预置为运营身份，
+                        // 不默认具备购买能力，因此访问订单接口得到 403 而不是放行。
+                        .requestMatchers("/api/orders", "/api/orders/**").hasRole("USER")
                         // 其余接口（含 /auth/me、/auth/logout）必须已认证
                         .anyRequest().authenticated())
                 .exceptionHandling(ex -> ex

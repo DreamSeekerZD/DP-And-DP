@@ -1,0 +1,161 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  订单表 SQL。
+
+  约定：
+    * 状态数值固定为 0=PENDING_PAYMENT / 1=PAID / 2=CLOSED，SQL 里直接用字面量并注释含义。
+    * 所有时间列按 UTC 读写；「当前时间」一律用 UTC_TIMESTAMP(3)，不用 NOW()（那是服务器本地时区）。
+    * 插入语句的列清单里没有 active_marker：它是数据库生成列，应用写入会绕过一人一张的唯一约束。
+    * 写操作都带原状态条件，影响行数为 0 时由服务层判断为并发冲突或状态不符，不能当作成功。
+-->
+<mapper namespace="com.zddp.ticket.order.mapper.OrderMapper">
+
+    <resultMap id="orderMap" type="com.zddp.ticket.order.model.entity.TicketOrder">
+        <id column="id" property="id"/>
+        <result column="user_id" property="userId"/>
+        <result column="performance_id" property="performanceId"/>
+        <result column="performance_title" property="performanceTitle"/>
+        <result column="performance_venue" property="performanceVenue"/>
+        <result column="performance_starts_at" property="performanceStartsAt"/>
+        <result column="amount_cent" property="amountCent"/>
+        <!-- status 与 close_reason 由 MyBatis-Plus 的枚举处理器按 @EnumValue 映射 -->
+        <result column="status" property="status"/>
+        <result column="close_reason" property="closeReason"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="expire_at" property="expireAt"/>
+        <result column="paid_at" property="paidAt"/>
+        <result column="closed_at" property="closedAt"/>
+        <result column="ticket_no" property="ticketNo"/>
+        <result column="active_marker" property="activeMarker"/>
+    </resultMap>
+
+    <sql id="columns">
+        id, user_id, performance_id, performance_title, performance_venue, performance_starts_at,
+        amount_cent, status, close_reason, created_at, expire_at, paid_at, closed_at, ticket_no, active_marker
+    </sql>
+
+    <!-- 数据库当前时间（UTC）。到期判断、关闭原因、截止时间计算都用它。 -->
+    <select id="selectDatabaseNowUtc" resultType="java.time.LocalDateTime">
+        SELECT UTC_TIMESTAMP(3)
+    </select>
+
+    <!--
+      行锁：按 id + 下单用户取本人这一单。FOR UPDATE 必须在事务中执行，
+      取消订单在短事务里先拿这把锁，再判断状态与是否到期。
+    -->
+    <select id="selectOwnedForUpdate" resultMap="orderMap">
+        SELECT
+        <include refid="columns"/>
+        FROM ticket_order
+        WHERE id = #{id}
+        AND user_id = #{userId}
+        FOR UPDATE
+    </select>
+
+    <!--
+      后台超时关闭用的行锁：只按订单号。
+      扫描出来的订单号就是依据，这个入口不接受浏览器身份，因此不带 user_id 条件。
+    -->
+    <select id="selectForUpdateById" resultMap="orderMap">
+        SELECT
+        <include refid="columns"/>
+        FROM ticket_order
+        WHERE id = #{id}
+        FOR UPDATE
+    </select>
+
+    <!--
+      本人对某演出的有效订单（待支付或已支付）。
+      唯一索引 uk_order_user_performance_active 保证至多一条；LIMIT 1 只是防御性写法。
+    -->
+    <select id="selectActiveByUserAndPerformance" resultMap="orderMap">
+        SELECT
+        <include refid="columns"/>
+        FROM ticket_order
+        WHERE user_id = #{userId}
+        AND performance_id = #{performanceId}
+        AND status IN (0, 1) /* 0 = PENDING_PAYMENT, 1 = PAID */
+        LIMIT 1
+    </select>
+
+    <select id="selectOwnedDetail" resultMap="orderMap">
+        SELECT
+        <include refid="columns"/>
+        FROM ticket_order
+        WHERE id = #{id}
+        AND user_id = #{userId}
+    </select>
+
+    <!--
+      显式列清单插入，不含 active_marker（数据库生成）。
+      同一用户对同一演出再插一条有效单会撞 uk_order_user_performance_active，
+      由服务层在事务外识别并改为返回原单。
+    -->
+    <insert id="insertOrder" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO ticket_order (user_id, performance_id, performance_title, performance_venue,
+                                  performance_starts_at, amount_cent, status, close_reason,
+                                  created_at, expire_at, paid_at, closed_at, ticket_no)
+        VALUES (#{userId}, #{performanceId}, #{performanceTitle}, #{performanceVenue},
+                #{performanceStartsAt}, #{amountCent}, #{status}, #{closeReason},
+                #{createdAt}, #{expireAt}, #{paidAt}, #{closedAt}, #{ticketNo})
+    </insert>
+
+    <!--
+      待支付 -> 已关闭。条件 status = 0 保证只成功一次：
+      并发的另一次关闭、或已被支付，都会让影响行数为 0，服务层据此回滚而不是重复释放库存。
+      close_reason 与 closed_at 与状态同事务写入。
+    -->
+    <update id="closePending">
+        UPDATE ticket_order
+        SET status       = 2,
+            close_reason = #{closeReason},
+            closed_at    = #{closedAt}
+        WHERE id = #{id}
+          AND status = 0 /* 0 = PENDING_PAYMENT */
+    </update>
+
+    <!--
+      超时扫描候选：已到截止时间且仍待支付。
+      按 (expire_at, id) 稳定排序、LIMIT 上限、不用 OFFSET：下一轮从头再扫，
+      已经关闭的单不再是候选，因此不会漏单也不会重复处理。
+    -->
+    <select id="selectTimeoutCandidates" resultType="long">
+        SELECT id
+        FROM ticket_order
+        WHERE status = 0 /* 0 = PENDING_PAYMENT */
+        AND expire_at &lt;= UTC_TIMESTAMP(3)
+        ORDER BY expire_at, id
+        LIMIT #{limit}
+    </select>
+
+    <!-- 本人订单分页。筛选条件与 countOwned 必须保持一致，否则分页总数会对不上。 -->
+    <select id="selectOwnedPage" resultMap="orderMap">
+        SELECT
+        <include refid="columns"/>
+        FROM ticket_order
+        WHERE user_id = #{userId}
+        <if test="performanceId != null">
+            AND performance_id = #{performanceId}
+        </if>
+        <if test="status != null">
+            AND status = #{status}
+        </if>
+        ORDER BY created_at DESC, id DESC
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <select id="countOwned" resultType="long">
+        SELECT COUNT(*)
+        FROM ticket_order
+        WHERE user_id = #{userId}
+        <if test="performanceId != null">
+            AND performance_id = #{performanceId}
+        </if>
+        <if test="status != null">
+            AND status = #{status}
+        </if>
+    </select>
+
+</mapper>

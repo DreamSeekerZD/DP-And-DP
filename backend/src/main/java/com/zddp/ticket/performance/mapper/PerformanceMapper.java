@@ -1,6 +1,7 @@
 package com.zddp.ticket.performance.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import com.zddp.ticket.performance.model.dto.PerformancePurchaseDTO;
 import com.zddp.ticket.performance.model.entity.Performance;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
@@ -95,4 +96,40 @@ public interface PerformanceMapper extends BaseMapper<Performance> {
 
     /** 运营详情：本人所有状态都可见，他人的查不到 */
     Performance selectOwnedDetail(@Param("id") Long id, @Param("publisherId") Long publisherId);
+
+    // ===================== 下单链路的库存操作（B02） =====================
+
+    /**
+     * 下单所需的演出购买信息。刻意只取交易判断要用的列，不含介绍与封面。
+     *
+     * <p>这里**不加锁**：它只用于给出可售状态与快照，
+     * 真正的并发保护是下面 {@link #reserveOne(Long)} 的条件更新。
+     * 返回 null 表示演出不存在，调用方按 404 处理。
+     */
+    PerformancePurchaseDTO selectPurchaseInfo(@Param("id") Long id);
+
+    /**
+     * 条件扣减一张可售库存，成功返回 1，否则返回 0。
+     *
+     * <p>四个条件缺一不可：编号、已发布、可售库存大于 0、尚未开始。
+     * 后两个条件由数据库在**拿到行锁之后**重新求值，所以：
+     * <ul>
+     *   <li>并发争抢最后一张票时只有一个事务能扣成功，另一个影响行数为 0 并整笔回滚，不会超卖；</li>
+     *   <li>如果这条 UPDATE 因为别人持锁而等待，等它拿到锁时「尚未开始」会用当时的时间重新判断，
+     *       开演后不会再把票卖出去。</li>
+     * </ul>
+     * 影响行数为 0 时调用方需要重新读一次演出，区分「售罄」「已下架」「已开始」，不能一律当成售罄。
+     */
+    int reserveOne(@Param("id") Long id);
+
+    /**
+     * 恢复一张可售库存，成功返回 1，否则返回 0。
+     *
+     * <p>上界限制 available_stock &lt; total_stock：重复释放不会把库存加超，
+     * 影响行数为 0 说明数据已经不一致，调用方必须整笔回滚并报告，不能当作成功。
+     *
+     * <p>刻意**不限制**演出是否仍然发布、是否已经开始：演出下架或开演之后关闭订单，
+     * 该释放的库存仍要释放。
+     */
+    int releaseOne(@Param("id") Long id);
 }

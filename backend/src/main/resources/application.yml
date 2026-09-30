@@ -46,6 +46,21 @@ mybatis-plus:
   global-config:
     banner: false
 
+# 订单相关的少量配置（B02）。
+# 这里只放运行参数，不放任何业务规则；业务规则写在代码里并带中文说明。
+ticket:
+  order:
+    # 订单支付有效期：支付截止时间 = min(下单时间 + 本期限, 演出开始时间)。
+    # 默认 300 秒。本地想快速观察超时关闭时，在 application-local.yml 里改短（例如 30s）后重启应用；
+    # 已经创建好的订单截止时间不会随配置变化。必须是正数。
+    timeout: 300s
+    # 超时关闭扫描：fixedDelay 间隔（上一轮结束后再等这么久）与每轮最多处理的订单数。
+    timeout-scan-interval: 5s
+    timeout-scan-limit: 100
+    # 自动调度开关。集成测试设成 false 并直接调用扫描入口，
+    # 避免后台线程在断言中途把订单关掉。
+    timeout-scan-enabled: true
+
 logging:
   level:
     root: info

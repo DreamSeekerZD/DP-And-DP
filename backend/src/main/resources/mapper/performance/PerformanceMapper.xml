@@ -181,4 +181,53 @@
         AND publisher_id = #{publisherId}
     </select>
 
+    <!--
+      ===================== 下单链路的库存操作（B02） =====================
+
+      这三条是订单交易的关键 SQL，放在这里而不是订单模块：
+      库存是演出模块的数据，订单模块只通过 PerformanceInventoryService 使用它，
+      不直接碰 performance 表。
+    -->
+
+    <!--
+      下单所需的购买信息。只取交易判断要用的列，不含介绍与封面。
+      不加锁：并发保护交给下面带条件的扣减 UPDATE。
+    -->
+    <select id="selectPurchaseInfo"
+            resultType="com.zddp.ticket.performance.model.dto.PerformancePurchaseDTO">
+        SELECT id, title, venue, starts_at, price_cent, total_stock, available_stock, status
+        FROM performance
+        WHERE id = #{id}
+    </select>
+
+    <!--
+      条件扣减一张可售库存。四个条件缺一不可：
+        status = 1        已发布（1 = PUBLISHED）
+        available_stock > 0 还有票
+        starts_at > UTC_TIMESTAMP(3) 尚未开始
+      这些条件在数据库拿到行锁之后重新求值，因此并发抢最后一张票时只会有一个事务成功；
+      等待锁期间如果开演时间到了，这条 UPDATE 也会因为时间条件不成立而不生效。
+      available_stock = available_stock - 1 直接对列自减，不做「先读后写」，避免丢失更新。
+    -->
+    <update id="reserveOne">
+        UPDATE performance
+        SET available_stock = available_stock - 1
+        WHERE id = #{id}
+          AND status = 1 /* 1 = PUBLISHED，只有已发布可下单 */
+          AND available_stock &gt; 0
+          AND starts_at &gt; UTC_TIMESTAMP(3)
+    </update>
+
+    <!--
+      恢复一张可售库存。上界可售库存 < 总库存：
+      重复释放会影响 0 行，服务层据此整笔回滚，不会把库存加超。
+      故意不判断演出是否仍发布或是否已开始——下架、开演之后关闭订单同样要还票。
+    -->
+    <update id="releaseOne">
+        UPDATE performance
+        SET available_stock = available_stock + 1
+        WHERE id = #{id}
+          AND available_stock &lt; total_stock
+    </update>
+
 </mapper>
