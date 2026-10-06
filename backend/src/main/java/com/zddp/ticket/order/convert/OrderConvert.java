@@ -3,6 +3,7 @@ package com.zddp.ticket.order.convert;
 import com.zddp.ticket.order.enums.OrderCloseReason;
 import com.zddp.ticket.order.enums.OrderStatus;
 import com.zddp.ticket.order.model.entity.TicketOrder;
+import com.zddp.ticket.order.model.vo.OperatorOrderVO;
 import com.zddp.ticket.order.model.vo.OrderVO;
 import org.mapstruct.Mapper;
 import org.mapstruct.Mapping;
@@ -37,6 +38,20 @@ public interface OrderConvert {
     @Mapping(target = "canPay", ignore = true)
     @Mapping(target = "canCancel", ignore = true)
     OrderVO toVO(TicketOrder order);
+
+    /**
+     * 运营视角的裁剪输出：只搬运成交与状态字段。
+     * 其余字段（ticketNo、userId、用户名、canPay/canCancel、serverTime 等）
+     * 根本不在目标类型里，因此<b>不可能</b>被输出——这是字段级裁剪，
+     * 而不是靠遗漏来碰运气。只读查询，调用方不用再补任何字段。
+     */
+    @Mapping(target = "createdAt", source = "createdAt", qualifiedByName = "utcLocalToOffset")
+    @Mapping(target = "expireAt", source = "expireAt", qualifiedByName = "utcLocalToOffset")
+    @Mapping(target = "paidAt", source = "paidAt", qualifiedByName = "utcLocalToOffset")
+    @Mapping(target = "closedAt", source = "closedAt", qualifiedByName = "utcLocalToOffset")
+    @Mapping(target = "status", source = "status", qualifiedByName = "statusName")
+    @Mapping(target = "closeReason", source = "closeReason", qualifiedByName = "closeReasonName")
+    OperatorOrderVO toOperatorVO(TicketOrder order);
 
     /** 数据库里的 UTC 时间 -> 带 UTC 偏移的对外时间；空值保持为空 */
     @Named("utcLocalToOffset")

@@ -103,6 +103,20 @@
     </insert>
 
     <!--
+      待支付 -> 已支付（模拟付款）。条件 status = 0 保证只成功一次：
+      并发支付与关闭只能有一个赢家；票号与支付时间在同一条 UPDATE 里一次写入。
+      不改 active_marker（生成列跟随 status 自动变为 1），也不改库存。
+    -->
+    <update id="payPending">
+        UPDATE ticket_order
+        SET status   = 1,
+            paid_at  = #{paidAt},
+            ticket_no = #{ticketNo}
+        WHERE id = #{id}
+          AND status = 0 /* 0 = PENDING_PAYMENT */
+    </update>
+
+    <!--
       待支付 -> 已关闭。条件 status = 0 保证只成功一次：
       并发的另一次关闭、或已被支付，都会让影响行数为 0，服务层据此回滚而不是重复释放库存。
       close_reason 与 closed_at 与状态同事务写入。
@@ -153,6 +167,33 @@
         <if test="performanceId != null">
             AND performance_id = #{performanceId}
         </if>
+        <if test="status != null">
+            AND status = #{status}
+        </if>
+    </select>
+
+    <!--
+      所属运营查询某场演出的订单分页。
+      只按 performance_id 过滤：演出归属在服务层先用 detailOwned 校验（非本人 404），
+      因此这里不会泄露别的运营的订单，也不接受客户端传递的任何范围参数。
+      排序与本人订单一致：createdAt DESC, id DESC。
+    -->
+    <select id="selectOperatorPage" resultMap="orderMap">
+        SELECT
+        <include refid="columns"/>
+        FROM ticket_order
+        WHERE performance_id = #{performanceId}
+        <if test="status != null">
+            AND status = #{status}
+        </if>
+        ORDER BY created_at DESC, id DESC
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <select id="countOperator" resultType="long">
+        SELECT COUNT(*)
+        FROM ticket_order
+        WHERE performance_id = #{performanceId}
         <if test="status != null">
             AND status = #{status}
         </if>

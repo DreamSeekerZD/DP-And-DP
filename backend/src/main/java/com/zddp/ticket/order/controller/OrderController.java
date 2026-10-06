@@ -6,9 +6,11 @@ import com.zddp.ticket.common.Result;
 import com.zddp.ticket.order.model.dto.CancelOrderDTO;
 import com.zddp.ticket.order.model.dto.CreateOrderDTO;
 import com.zddp.ticket.order.model.dto.OrderQueryDTO;
+import com.zddp.ticket.order.model.dto.SimulatePaymentDTO;
 import com.zddp.ticket.order.model.vo.OrderVO;
 import com.zddp.ticket.order.model.vo.PlaceOrderVO;
 import com.zddp.ticket.order.service.OrderCloseService;
+import com.zddp.ticket.order.service.OrderPaymentService;
 import com.zddp.ticket.order.service.OrderPlaceService;
 import com.zddp.ticket.order.service.OrderQueryService;
 import com.zddp.ticket.user.model.AppUserPrincipal;
@@ -39,13 +41,17 @@ public class OrderController {
 
     private final OrderCloseService orderCloseService;
 
+    private final OrderPaymentService orderPaymentService;
+
     private final OrderQueryService orderQueryService;
 
     public OrderController(OrderPlaceService orderPlaceService,
                            OrderCloseService orderCloseService,
+                           OrderPaymentService orderPaymentService,
                            OrderQueryService orderQueryService) {
         this.orderPlaceService = orderPlaceService;
         this.orderCloseService = orderCloseService;
+        this.orderPaymentService = orderPaymentService;
         this.orderQueryService = orderQueryService;
     }
 
@@ -97,6 +103,19 @@ public class OrderController {
                                   @PathVariable("id") Long id,
                                   @RequestBody(required = false) CancelOrderDTO request) {
         return Result.success(orderCloseService.cancel(currentUserId(authentication), id));
+    }
+
+    /**
+     * 模拟付款（不扣真实款项）。
+     *
+     * <p>同样不接受任何参数：金额取自成交快照、身份取自会话、结果由服务端裁决。
+     * 已支付重复提交返回原票号与原支付时间；已关闭 409；已到截止时间 409。
+     */
+    @PostMapping("/{id}/simulate-payment")
+    public Result<OrderVO> simulatePayment(Authentication authentication,
+                                           @PathVariable("id") Long id,
+                                           @RequestBody(required = false) SimulatePaymentDTO request) {
+        return Result.success(orderPaymentService.pay(currentUserId(authentication), id));
     }
 
     /**

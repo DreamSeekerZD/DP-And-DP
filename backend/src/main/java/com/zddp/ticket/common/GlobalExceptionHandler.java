@@ -3,6 +3,7 @@ package com.zddp.ticket.common;
 import jakarta.validation.ConstraintViolationException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.ConcurrencyFailureException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -74,6 +75,24 @@ public class GlobalExceptionHandler {
     public ResponseEntity<Result<Void>> handleConstraintViolation(ConstraintViolationException ex) {
         log.warn("约束校验失败: {}", ex.getMessage());
         return badRequest("参数校验失败");
+    }
+
+    /**
+     * 数据库锁竞争：死锁、锁等待超时、无法取得锁等（ConcurrencyFailureException 及其子类）。
+     *
+     * <p>映射为 503 SERVICE_BUSY。异常是从事务方法<b>穿过事务代理退出之后</b>才到达这里，
+     * 因此事务已经完整回滚，不会因为映射而吞掉回滚。客户端应查询原订单确认结果，
+     * 不要自动重发写请求。
+     *
+     * <p>Spring 的异常转换把底层 MySQL 死锁/锁等待统一转成 ConcurrencyFailureException，
+     * 因此一个处理器就能覆盖下单、付款、取消、扫描的所有锁竞争路径
+     * （这是 B02 验收记录的「关闭入口锁异常映射不完整」建议在 B03 的收口）。
+     */
+    @ExceptionHandler(ConcurrencyFailureException.class)
+    public ResponseEntity<Result<Void>> handleConcurrencyFailure(ConcurrencyFailureException ex) {
+        log.warn("数据库锁竞争，事务已回滚: {}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(Result.<Void>error("SERVICE_BUSY", "系统繁忙，请稍后查询结果并重试"));
     }
 
     /** 兜底：未预期异常。只记录服务端日志，对外返回通用错误，不泄露内部细节。 */

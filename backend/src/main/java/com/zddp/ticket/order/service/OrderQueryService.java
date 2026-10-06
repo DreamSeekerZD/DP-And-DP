@@ -7,7 +7,9 @@ import com.zddp.ticket.order.enums.OrderStatus;
 import com.zddp.ticket.order.mapper.OrderMapper;
 import com.zddp.ticket.order.model.dto.OrderQueryDTO;
 import com.zddp.ticket.order.model.entity.TicketOrder;
+import com.zddp.ticket.order.model.vo.OperatorOrderVO;
 import com.zddp.ticket.order.model.vo.OrderVO;
+import com.zddp.ticket.performance.service.PerformanceService;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
@@ -43,9 +45,19 @@ public class OrderQueryService {
 
     private final OrderConvert orderConvert;
 
-    public OrderQueryService(OrderMapper orderMapper, OrderConvert orderConvert) {
+    /**
+     * 运营订单查询需要先确认「这场演出归这个运营所有」。
+     * 复用 performance 模块的 detailOwned 做归属校验（非本人或不存在 404），
+     * 遵守「order 模块可以调用 performance，performance 不反向调用 order」的依赖方向。
+     */
+    private final PerformanceService performanceService;
+
+    public OrderQueryService(OrderMapper orderMapper,
+                             OrderConvert orderConvert,
+                             PerformanceService performanceService) {
         this.orderMapper = orderMapper;
         this.orderConvert = orderConvert;
+        this.performanceService = performanceService;
     }
 
     /** 本人订单分页，按 createdAt DESC, id DESC；可按演出与状态筛选 */
@@ -76,6 +88,32 @@ public class OrderQueryService {
             throw BusinessException.notFound("订单不存在或不属于当前用户");
         }
         return toVO(order, orderMapper.selectDatabaseNowUtc());
+    }
+
+    /**
+     * 所属运营查询某场演出的订单，只读。
+     *
+     * <p>先校验演出归属（非本人 404），再按演出 + 可选状态分页。
+     * 输出刻意是裁剪过的 {@link OperatorOrderVO}：不含票号、用户身份、可操作提示。
+     * 分页期间并发变更不保证总数固定，这是分页接口的一般语义，不是错误。
+     */
+    public PageResult<OperatorOrderVO> pageForOperator(Long publisherId, Long performanceId, OrderQueryDTO query) {
+        requirePositiveId(performanceId);
+        validatePaging(query.getPage(), query.getPageSize());
+        Integer statusCode = parseStatusFilter(query.getStatus());
+
+        // 归属校验：演出不存在或不属于当前运营都返回 404
+        performanceService.detailOwned(publisherId, performanceId);
+
+        long offset = ((long) query.getPage() - 1) * query.getPageSize();
+        long total = orderMapper.countOperator(performanceId, statusCode);
+        List<TicketOrder> rows = orderMapper.selectOperatorPage(performanceId, statusCode, offset, query.getPageSize());
+
+        List<OperatorOrderVO> items = new ArrayList<OperatorOrderVO>(rows.size());
+        for (TicketOrder row : rows) {
+            items.add(orderConvert.toOperatorVO(row));
+        }
+        return new PageResult<OperatorOrderVO>(items, total, query.getPage(), query.getPageSize());
     }
 
     /**

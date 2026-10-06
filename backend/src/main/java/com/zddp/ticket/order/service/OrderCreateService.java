@@ -1,6 +1,7 @@
 package com.zddp.ticket.order.service;
 
 import com.zddp.ticket.common.BusinessException;
+import com.zddp.ticket.order.diagnostic.OrderTimingProbe;
 import com.zddp.ticket.order.enums.OrderStatus;
 import com.zddp.ticket.order.mapper.OrderMapper;
 import com.zddp.ticket.order.model.entity.TicketOrder;
@@ -50,10 +51,14 @@ public class OrderCreateService {
     /** 订单支付有效期；构造时校验为正数，配置写错会启动即失败而不是运行期行为诡异 */
     private final Duration orderTimeout;
 
+    /** 下单耗时诊断探针；默认关闭，只对指定演出计时，不影响任何业务行为 */
+    private final OrderTimingProbe timingProbe;
+
     public OrderCreateService(OrderMapper orderMapper,
                               PerformanceInventoryService inventoryService,
                               OrderQueryService orderQueryService,
-                              @Value("${ticket.order.timeout}") Duration orderTimeout) {
+                              @Value("${ticket.order.timeout}") Duration orderTimeout,
+                              OrderTimingProbe timingProbe) {
         if (orderTimeout == null || orderTimeout.isZero() || orderTimeout.isNegative()) {
             throw new IllegalStateException("配置 ticket.order.timeout 必须是正数");
         }
@@ -61,6 +66,7 @@ public class OrderCreateService {
         this.inventoryService = inventoryService;
         this.orderQueryService = orderQueryService;
         this.orderTimeout = orderTimeout;
+        this.timingProbe = timingProbe;
     }
 
     /**
@@ -71,56 +77,72 @@ public class OrderCreateService {
      */
     @Transactional
     public OrderVO create(Long userId, Long performanceId) {
-        PerformancePurchaseDTO purchase = inventoryService.getPurchaseInfo(performanceId);
-        if (purchase == null) {
-            throw BusinessException.notFound("演出不存在");
+        // 诊断计时：方法体首行，结束 proxy-entry（事务代理入口）。默认关闭，不影响业务。
+        timingProbe.mark(OrderTimingProbe.Stage.PROXY_ENTRY_END);
+        try {
+            PerformancePurchaseDTO purchase = inventoryService.getPurchaseInfo(performanceId);
+            if (purchase == null) {
+                throw BusinessException.notFound("演出不存在");
+            }
+
+            LocalDateTime now = orderMapper.selectDatabaseNowUtc();
+            assertSaleable(purchase, now);
+
+            // 截止时间取「下单时间 + 有效期」与「演出开始时间」中较早的一个：
+            // 演出开始之后不允许再付款，所以不能把截止时间放到开演之后。
+            LocalDateTime expireAt = now.plus(orderTimeout);
+            if (expireAt.isAfter(purchase.getStartsAt())) {
+                expireAt = purchase.getStartsAt();
+            }
+
+            TicketOrder order = new TicketOrder();
+            order.setUserId(userId);
+            order.setPerformanceId(purchase.getId());
+            // 成交快照全部取自演出，金额不接受浏览器指定
+            order.setPerformanceTitle(purchase.getTitle());
+            order.setPerformanceVenue(purchase.getVenue());
+            order.setPerformanceStartsAt(purchase.getStartsAt());
+            order.setAmountCent(purchase.getPriceCent());
+            order.setStatus(OrderStatus.PENDING_PAYMENT);
+            order.setCloseReason(null);
+            order.setCreatedAt(now);
+            order.setExpireAt(expireAt);
+            order.setPaidAt(null);
+            order.setClosedAt(null);
+            order.setTicketNo(null);
+            orderMapper.insertOrder(order);
+
+            // 诊断计时：扣库存（reserveOne）调用前，结束 body-before-stock。
+            timingProbe.mark(OrderTimingProbe.Stage.BODY_BEFORE_STOCK_END);
+            boolean reserved;
+            try {
+                reserved = inventoryService.reserveOne(performanceId);
+            } finally {
+                // 无论正常返回还是抛出，都以这点作为 stock-update 的结束（返回/抛出）。
+                timingProbe.mark(OrderTimingProbe.Stage.STOCK_UPDATE_END);
+            }
+            if (!reserved) {
+                // 影响 0 行说明这条 UPDATE 的条件不成立。重新读一次演出，
+                // 区分「售罄」「已下架」「已开始」，给出准确的业务码后整笔回滚。
+                throw classifyReserveFailure(performanceId);
+            }
+
+            // 拿到库存行锁之后再取一次新鲜时间：等锁期间时间可能已经推进
+            LocalDateTime freshNow = orderMapper.selectDatabaseNowUtc();
+            if (!freshNow.isBefore(expireAt)) {
+                throw new BusinessException(HttpStatus.CONFLICT, "PERFORMANCE_NOT_SALEABLE",
+                        "已到支付截止时间，请重新下单");
+            }
+            if (!freshNow.isBefore(purchase.getStartsAt())) {
+                throw new BusinessException(HttpStatus.CONFLICT, "PERFORMANCE_NOT_SALEABLE",
+                        "演出已经开始，无法下单");
+            }
+
+            return orderQueryService.toVO(order, freshNow);
+        } finally {
+            // 诊断计时：方法体 finally 结束，结束 body-after-stock；不进任何业务逻辑。
+            timingProbe.mark(OrderTimingProbe.Stage.BODY_END);
         }
-
-        LocalDateTime now = orderMapper.selectDatabaseNowUtc();
-        assertSaleable(purchase, now);
-
-        // 截止时间取「下单时间 + 有效期」与「演出开始时间」中较早的一个：
-        // 演出开始之后不允许再付款，所以不能把截止时间放到开演之后。
-        LocalDateTime expireAt = now.plus(orderTimeout);
-        if (expireAt.isAfter(purchase.getStartsAt())) {
-            expireAt = purchase.getStartsAt();
-        }
-
-        TicketOrder order = new TicketOrder();
-        order.setUserId(userId);
-        order.setPerformanceId(purchase.getId());
-        // 成交快照全部取自演出，金额不接受浏览器指定
-        order.setPerformanceTitle(purchase.getTitle());
-        order.setPerformanceVenue(purchase.getVenue());
-        order.setPerformanceStartsAt(purchase.getStartsAt());
-        order.setAmountCent(purchase.getPriceCent());
-        order.setStatus(OrderStatus.PENDING_PAYMENT);
-        order.setCloseReason(null);
-        order.setCreatedAt(now);
-        order.setExpireAt(expireAt);
-        order.setPaidAt(null);
-        order.setClosedAt(null);
-        order.setTicketNo(null);
-        orderMapper.insertOrder(order);
-
-        if (!inventoryService.reserveOne(performanceId)) {
-            // 影响 0 行说明这条 UPDATE 的条件不成立。重新读一次演出，
-            // 区分「售罄」「已下架」「已开始」，给出准确的业务码后整笔回滚。
-            throw classifyReserveFailure(performanceId);
-        }
-
-        // 拿到库存行锁之后再取一次新鲜时间：等锁期间时间可能已经推进
-        LocalDateTime freshNow = orderMapper.selectDatabaseNowUtc();
-        if (!freshNow.isBefore(expireAt)) {
-            throw new BusinessException(HttpStatus.CONFLICT, "PERFORMANCE_NOT_SALEABLE",
-                    "已到支付截止时间，请重新下单");
-        }
-        if (!freshNow.isBefore(purchase.getStartsAt())) {
-            throw new BusinessException(HttpStatus.CONFLICT, "PERFORMANCE_NOT_SALEABLE",
-                    "演出已经开始，无法下单");
-        }
-
-        return orderQueryService.toVO(order, freshNow);
     }
 
     /** 首次校验：不存在已在上面处理，这里判断可售性 */

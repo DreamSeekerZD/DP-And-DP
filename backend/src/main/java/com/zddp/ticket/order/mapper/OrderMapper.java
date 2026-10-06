@@ -59,6 +59,16 @@ public interface OrderMapper extends BaseMapper<TicketOrder> {
     int insertOrder(TicketOrder order);
 
     /**
+     * 待支付 -> 已支付：一次写入支付时间与票号。
+     * 带 status = 0 条件，因此只可能成功一次；影响行数必须是 1，
+     * 否则说明状态已被并发改写，服务层整笔回滚，不能假装支付成功。
+     * 本语句不改动 active_marker——那是生成列，跟随 status 自动变化。
+     */
+    int payPending(@Param("id") Long id,
+                   @Param("paidAt") LocalDateTime paidAt,
+                   @Param("ticketNo") String ticketNo);
+
+    /**
      * 待支付 -> 已关闭。带 status = 0 条件，因此只可能成功一次；
      * 影响行数为 0 表示这单已被并发关闭或已支付，调用方必须据此回滚或跳过，
      * 不能当成关闭成功去恢复库存。
@@ -88,4 +98,18 @@ public interface OrderMapper extends BaseMapper<TicketOrder> {
     long countOwned(@Param("userId") Long userId,
                     @Param("performanceId") Long performanceId,
                     @Param("status") Integer status);
+
+    /**
+     * 所属运营查询某场演出的订单分页。
+     * 只按 performance_id 过滤：归属校验由服务层先做（演出不存在或非本人 404），
+     * 这里不允许客户端用任何方式决定查询的范围。
+     * offset 用 long，理由与 selectOwnedPage 相同。
+     */
+    List<TicketOrder> selectOperatorPage(@Param("performanceId") Long performanceId,
+                                         @Param("status") Integer status,
+                                         @Param("offset") long offset,
+                                         @Param("limit") int limit);
+
+    /** 同演出的订单总数，筛选条件与 selectOperatorPage 一致 */
+    long countOperator(@Param("performanceId") Long performanceId, @Param("status") Integer status);
 }

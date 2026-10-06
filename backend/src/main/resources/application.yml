@@ -1,7 +1,10 @@
 # 公共配置。数据库连接信息不在这里，放在被 git 忽略的 application-local.yml 中。
 # 本地启动：mvn spring-boot:run "-Dspring-boot.run.profiles=local"
 server:
-  port: 8081
+#  port: 8081
+  port: 8082
+  tomcat:
+    keep-alive-timeout: 180s
   servlet:
     session:
       # 会话空闲 8 小时到期。注意这是「空闲时长」而不是「绝对登录时长」：
@@ -60,6 +63,11 @@ ticket:
     # 自动调度开关。集成测试设成 false 并直接调用扫描入口，
     # 避免后台线程在断言中途把订单关掉。
     timeout-scan-enabled: true
+    # 下单耗时诊断探针（默认关闭，只对指定演出计时，不影响任何业务行为）。
+    # 开启后填本轮要定位的演出 ID，应用正常关闭时一次性输出每阶段 count/avg/P95/max。
+    diagnostic:
+      enabled: false
+      performance-id: 0
 
 logging:
   level:

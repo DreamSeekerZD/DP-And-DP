@@ -1,6 +1,7 @@
 package com.zddp.ticket.order.service;
 
 import com.zddp.ticket.common.BusinessException;
+import com.zddp.ticket.order.diagnostic.OrderTimingProbe;
 import com.zddp.ticket.order.enums.OrderStatus;
 import com.zddp.ticket.order.mapper.OrderMapper;
 import com.zddp.ticket.order.model.entity.TicketOrder;
@@ -59,14 +60,19 @@ public class OrderPlaceService {
 
     private final OrderQueryService orderQueryService;
 
+    /** 下单耗时诊断探针；默认关闭，只对指定演出计时，不影响任何业务行为 */
+    private final OrderTimingProbe timingProbe;
+
     public OrderPlaceService(OrderMapper orderMapper,
                              OrderCreateService orderCreateService,
                              OrderCloseService orderCloseService,
-                             OrderQueryService orderQueryService) {
+                             OrderQueryService orderQueryService,
+                             OrderTimingProbe timingProbe) {
         this.orderMapper = orderMapper;
         this.orderCreateService = orderCreateService;
         this.orderCloseService = orderCloseService;
         this.orderQueryService = orderQueryService;
+        this.timingProbe = timingProbe;
     }
 
     /**
@@ -76,47 +82,76 @@ public class OrderPlaceService {
      * 已经买到票的用户，即使演出后来下架了，也应该能拿回属于自己的那张订单。
      */
     public PlaceOrderVO place(Long userId, Long performanceId) {
-        requirePositiveId(performanceId);
+        // 诊断计时：请求入口开启请求级计时（仅当开关开启且演出匹配）。
+        timingProbe.beginPlace(performanceId);
+        boolean isCreated = false;
+        try {
+            requirePositiveId(performanceId);
 
-        TicketOrder active = orderMapper.selectActiveByUserAndPerformance(userId, performanceId);
-        PlaceOrderVO reused = tryReuse(active);
-        if (reused != null) {
-            return reused;
-        }
-        if (active != null) {
-            // 原单是待支付且已到期：先用独立事务关闭并释放一张票，再重新尝试下单。
-            // 关闭与重买分属两个事务，释放出来的票也可能被别人先买走，这是允许的。
-            orderCloseService.closeExpired(active.getId());
-        }
-
-        for (int attempt = 1; attempt <= MAX_CREATE_ATTEMPTS; attempt++) {
+            // 诊断计时：首次原单查询，前后打点；查询结束用 finally 保证即使抛异常也记录终点。
+            timingProbe.markActiveQueryStart();
+            TicketOrder active;
             try {
-                OrderVO created = orderCreateService.create(userId, performanceId);
-                return new PlaceOrderVO(true, created);
-            } catch (DuplicateKeyException ex) {
-                if (!isActiveOrderConflict(ex)) {
-                    // 别的唯一约束冲突，不是「已有有效单」，原样抛出交全局处理器
-                    throw ex;
-                }
-                // 到这里 create 的事务已经完整回滚，可以安全地重新查询
-                PlaceOrderVO afterConflict =
-                        tryReuse(orderMapper.selectActiveByUserAndPerformance(userId, performanceId));
-                if (afterConflict != null) {
-                    return afterConflict;
-                }
-                // 冲突的那条原单在两次查询之间被关闭了：再整体尝试一次
-                log.info("下单撞唯一约束后未查到有效单，重试一次 userId={} performanceId={}",
-                        userId, performanceId);
-            } catch (ConcurrencyFailureException ex) {
-                // 死锁或锁等待超时：事务已整体回滚，不对结果作任何承诺
-                log.warn("下单遇到锁冲突 userId={} performanceId={} cause={}",
-                        userId, performanceId, ex.getMessage());
-                throw serviceBusy();
+                active = orderMapper.selectActiveByUserAndPerformance(userId, performanceId);
+            } finally {
+                timingProbe.markActiveQueryEnd();
             }
-        }
+            PlaceOrderVO reused = tryReuse(active);
+            if (reused != null) {
+                return reused;
+            }
+            if (active != null) {
+                // 原单是待支付且已到期：先用独立事务关闭并释放一张票，再重新尝试下单。
+                // 关闭与重买分属两个事务，释放出来的票也可能被别人先买走，这是允许的。
+                orderCloseService.closeExpired(active.getId());
+            }
 
-        // 两次尝试都撞到唯一约束说明并发压力持续存在，交给客户端稍后查询
-        throw serviceBusy();
+            for (int attempt = 1; attempt <= MAX_CREATE_ATTEMPTS; attempt++) {
+                try {
+                    // 诊断计时：在事务代理 create 调用前为这次独立尝试建立线程样本，
+                    // finally 里 finish 记录成功与否并清理，不吞异常。
+                    timingProbe.begin(performanceId);
+                    boolean success = false;
+                    try {
+                        OrderVO created = orderCreateService.create(userId, performanceId);
+                        // 代理正常返回说明事务已提交，才记为成功新建；提交失败会以异常越过代理。
+                        success = true;
+                        isCreated = true;
+                        return new PlaceOrderVO(true, created);
+                    } finally {
+                        // 成功与否以外层代理调用是否正常返回为准；ThreadLocal 在此清理。
+                        timingProbe.finish(success);
+                    }
+                } catch (DuplicateKeyException ex) {
+                    if (!isActiveOrderConflict(ex)) {
+                        // 别的唯一约束冲突，不是「已有有效单」，原样抛出交全局处理器
+                        throw ex;
+                    }
+                    // 到这里 create 的事务已经完整回滚，可以安全地重新查询
+                    // 注意：这是冲突后的第二次查询，不再计入首次 active-order-query
+                    PlaceOrderVO afterConflict =
+                            tryReuse(orderMapper.selectActiveByUserAndPerformance(userId, performanceId));
+                    if (afterConflict != null) {
+                        return afterConflict;
+                    }
+                    // 冲突的那条原单在两次查询之间被关闭了：再整体尝试一次
+                    log.info("下单撞唯一约束后未查到有效单，重试一次 userId={} performanceId={}",
+                            userId, performanceId);
+                } catch (ConcurrencyFailureException ex) {
+                    // 死锁或锁等待超时：事务已整体回滚，不对结果作任何承诺
+                    log.warn("下单遇到锁冲突 userId={} performanceId={} cause={}",
+                            userId, performanceId, ex.getMessage());
+                    throw serviceBusy();
+                }
+            }
+
+            // 两次尝试都撞到唯一约束说明并发压力持续存在，交给客户端稍后查询
+            throw serviceBusy();
+        } finally {
+            // 诊断计时：只在返回 created=true 时记成功；复用或抛异常累计为排除请求。
+            // 放在最外层 finally，重试不重置请求起点，place 最多记录一次。
+            timingProbe.finishPlace(isCreated);
+        }
     }
 
     /**
