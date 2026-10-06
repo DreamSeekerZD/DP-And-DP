@@ -2,7 +2,7 @@
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { cancelOrder, fetchOrder } from '@/api/order'
+import { cancelOrder, fetchOrder, simulatePayment } from '@/api/order'
 import { useAuthStore } from '@/stores/auth'
 import { ApiError } from '@/types/api'
 import {
@@ -32,6 +32,17 @@ const notFound = ref(false)
 const canceling = ref(false)
 /** 取消结果 / 查询失败等需要停留在页面上的说明，不用一闪而过的 toast 承担 */
 const cancelMessage = ref('')
+
+const paying = ref(false)
+/** 支付结果待确认 / 查询失败等需要停留的说明 */
+const payMessage = ref('')
+/**
+ * payMessage 属于哪个订单、是不是「结果不确定/查询失败」型提示。
+ * 只有「同订单 + 不确定型」的旧提示才会在之后同订单的一次有效成功查询中被清除；
+ * 明确的业务拒绝原因（409 等）保留到下一次操作或切换订单。
+ */
+let payMessageOrderId: string | null = null
+let payMessageUncertain = false
 
 // ---- 倒计时 ----
 /** 当前倒计时的展示秒数 */
@@ -65,6 +76,13 @@ function stopTicker(): void {
 /** 用一份新响应整体替换订单状态，并重设倒计时基准 */
 function applyOrder(o: Order): void {
   order.value = o
+  // 同一订单的一份有效成功响应（load／归零／取消后的查询都会走到这里），
+  // 说明旧的「结果待确认/查询失败」提示已过时；明确的业务拒绝原因（409 等）保留。
+  if (payMessageOrderId === o.id && payMessageUncertain) {
+    payMessage.value = ''
+    payMessageOrderId = null
+    payMessageUncertain = false
+  }
   elapsedBase = performance.now()
   remainingSecondsNow.value = remainingSeconds(o.expireAt, o.serverTime, 0)
   zeroFired = false
@@ -132,6 +150,18 @@ const isPending = computed(() => order.value?.status === 'PENDING_PAYMENT')
 const isClosed = computed(() => order.value?.status === 'CLOSED')
 const isPaid = computed(() => order.value?.status === 'PAID')
 
+/**
+ * 可支付：待支付 + canPay（服务端资格）+ 当前倒计时尚未归零。
+ * 这仍是「当前响应时刻」的提示，真实结果以服务端为准。
+ */
+const isPayable = computed(
+  () =>
+    isPending.value &&
+    order.value?.canPay === true &&
+    remainingSecondsNow.value > 0 &&
+    !zeroWaiting.value,
+)
+
 async function load(preserveMessage = false): Promise<void> {
   const id = orderId.value
   if (id === '') {
@@ -168,9 +198,103 @@ async function load(preserveMessage = false): Promise<void> {
   }
 }
 
+/**
+ * 操作（支付/取消）成功后的静默回读：
+ * 成功则用最新数据替换；失败则**保留已收到的真实结果**，只提示最新查询失败，
+ * 绝不把原订单改 CLOSED、伪造终态或新建订单。
+ */
+async function quietRefresh(): Promise<void> {
+  const myData = ++dataSeq
+  try {
+    const o = await fetchOrder(orderId.value)
+    if (myData !== dataSeq) return
+    applyOrder(o)
+  } catch {
+    if (myData !== dataSeq) return
+    payMessage.value = '已收到操作结果，但最新查询失败，请点「刷新」核实订单状态'
+    payMessageOrderId = orderId.value
+    payMessageUncertain = true
+  }
+}
+
+function describePayError(error: unknown): string {
+  if (error instanceof ApiError) {
+    if (error.status === 0 || error.status === 503) {
+      // 结果不确定：不承诺失败、不自动重发，给持久待确认与手动刷新入口
+      return '支付结果待确认：网络或服务可能出现异常。请点「刷新」核实订单状态后再决定是否重试。'
+    }
+    if (error.status === 401) {
+      return '登录已失效，请重新登录后再支付'
+    }
+    // 409（PAYMENT_EXPIRED / ORDER_CLOSED 等）：后端 message 已说明原因
+    return error.message
+  }
+  return '支付失败，请稍后重试'
+}
+
+/** 模拟支付：确认框说明不扣真实款项；付款/取消互斥；成功用服务端返回的票号与时间 */
+async function handlePay(): Promise<void> {
+  const current = order.value
+  if (!current || paying.value || canceling.value) return
+  if (!isPayable.value) return
+
+  // 确认框点「再想想」直接 return，不发任何请求
+  try {
+    await ElMessageBox.confirm(
+      '这是模拟支付，不会产生真实扣款。支付成功后订单记录票号，订单即完成不能再取消。确认支付吗？',
+      '确认模拟支付',
+      { confirmButtonText: '确认支付', cancelButtonText: '再想想', type: 'warning' },
+    )
+  } catch {
+    return
+  }
+
+  // 确认框停留期间可能已经切换订单：核对当前展示的还是同一单，避免替新订单付款
+  if (orderId.value !== current.id || order.value?.id !== current.id) return
+  if (!isPayable.value) return
+
+  paying.value = true
+  payMessage.value = ''
+  payMessageOrderId = null
+  payMessageUncertain = false
+  const myData = ++dataSeq
+
+  try {
+    const paid = await simulatePayment(current.id)
+    if (myData !== dataSeq) return // 已在别处导航：不把结果写到新页面
+    applyOrder(paid) // 真实返回：PAID、服务端票号与支付时间
+    ElMessage.success('支付成功')
+    // 回读真实结果；回读失败也保留已收到的成功结果，只提示查询失败
+    await quietRefresh()
+  } catch (error) {
+    if (myData !== dataSeq) return
+    payMessage.value = describePayError(error)
+    payMessageOrderId = current.id
+    // 0/503 = 结果不确定：之后同订单查询成功可清除；其余（401/409/其他）＝明确原因，保留
+    payMessageUncertain = error instanceof ApiError && (error.status === 0 || error.status === 503)
+    // 409（到期/已关闭）等确定业务失败：静默回读一次，让页面显示真实状态
+    if (error instanceof ApiError && error.status === 409) {
+      void quietRefresh()
+    }
+  } finally {
+    paying.value = false
+  }
+}
+
+/** 复制票号文本（可选手动复制，非授权令牌） */
+async function copyTicket(no: string | null): Promise<void> {
+  if (!no) return
+  try {
+    await navigator.clipboard.writeText(no)
+    ElMessage.success('票号已复制')
+  } catch {
+    ElMessage.warning('复制失败，请手动选择文本')
+  }
+}
+
 async function handleCancel(): Promise<void> {
   const o = order.value
-  if (!o || canceling.value) return
+  if (!o || canceling.value || paying.value) return
   if (!(o.status === 'PENDING_PAYMENT' && o.canCancel)) return
 
   // 确认框点「再想想」直接 return，不发任何请求
@@ -228,11 +352,22 @@ watch(
     stopTicker()
     order.value = null
     loadError.value = ''
+    payMessage.value = ''
+    cancelMessage.value = ''
+    payMessageOrderId = null
+    payMessageUncertain = false
     void router.replace({ name: 'login' })
   },
 )
 
-watch(orderId, () => void load())
+watch(orderId, () => {
+  // 切换订单：旧订单的待确认/查询失败/取消说明一并丢弃，防止污染新订单
+  payMessage.value = ''
+  payMessageOrderId = null
+  payMessageUncertain = false
+  cancelMessage.value = ''
+  void load()
+})
 
 onMounted(() => {
   document.addEventListener('visibilitychange', onVisibility)
@@ -357,7 +492,12 @@ onBeforeUnmount(() => {
         </div>
         <div v-if="isPaid && order.ticketNo" class="fact">
           <dt>票号</dt>
-          <dd class="num">{{ order.ticketNo }}</dd>
+          <dd class="ticket">
+            <span class="num">{{ order.ticketNo }}</span>
+            <el-button size="small" text type="primary" @click="copyTicket(order.ticketNo)">
+              复制
+            </el-button>
+          </dd>
         </div>
         <div v-if="isClosed" class="fact">
           <dt>关闭时间</dt>
@@ -372,10 +512,19 @@ onBeforeUnmount(() => {
       <div class="actions">
         <el-button size="small" :loading="loading" @click="load">刷新</el-button>
         <el-button
+          v-if="isPayable"
+          type="primary"
+          :loading="paying"
+          :disabled="paying || canceling || loading"
+          @click="handlePay"
+        >
+          模拟支付
+        </el-button>
+        <el-button
           v-if="isPending && order.canCancel"
           type="danger"
           :loading="canceling"
-          :disabled="canceling || loading"
+          :disabled="canceling || paying || loading"
           @click="handleCancel"
         >
           取消订单
@@ -388,16 +537,17 @@ onBeforeUnmount(() => {
           <el-button size="small">返回演出查看是否可重新购买</el-button>
         </RouterLink>
       </div>
-
-      <el-alert
-        class="notice notice--pay"
-        type="info"
-        :closable="false"
-        show-icon
-        title="模拟支付将在下一阶段开放"
-        description="当前阶段没有付款入口，也无法生成票号。待支付订单可以稍后关闭或等待超时释放；如果这台后端配置了短有效期（如 30 秒），到点后由服务端补扫关闭并释放名额。"
-      />
     </template>
+
+    <!-- 页面级：支付结果待确认/查询失败说明——即使查询失败、订单区切换成错误态，也不能被静默抹掉 -->
+    <el-alert
+      v-if="payMessage"
+      class="notice page-notice"
+      type="warning"
+      :title="payMessage"
+      :closable="false"
+      show-icon
+    />
   </div>
 </template>
 

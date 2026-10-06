@@ -10,7 +10,7 @@ export type OrderCloseReason = 'USER_CANCEL' | 'PAY_TIMEOUT'
  * 演出标题、地点、开始时间与金额都是**下单时的成交快照**，演出后续改名或下架不影响这里。
  * id / performanceId 是十进制字符串，不得转 Number；时间统一 UTC 的 `...Z` 形式。
  * canPay / canCancel 是「当前响应时刻」的资格提示，不能替代写接口的校验。
- * 本阶段**没有支付接口**：即使 canPay=true 也不展示可调用的付款按钮。
+ * canPay=true 只是表示「当前时刻可支付」，真实结果始终以服务端为准。
  */
 export interface Order {
   id: string
@@ -51,4 +51,23 @@ export const ORDER_STATUS_LABEL: Record<OrderStatus, string> = {
 export const CLOSE_REASON_LABEL: Record<OrderCloseReason, string> = {
   USER_CANCEL: '用户取消',
   PAY_TIMEOUT: '支付超时',
+}
+
+/**
+ * 运营视角的订单：只读、刻意裁剪——没有票号、没有用户身份、没有 canPay/canCancel。
+ * 运营只关心成交与状态，票号是购票者的成交凭据，不展示给运营。
+ */
+export interface OperatorOrder {
+  /** 订单编号，JSON 为十进制字符串 */
+  id: string
+  /** 演出编号，JSON 为十进制字符串 */
+  performanceId: string
+  /** 成交金额，单位分 */
+  amountCent: number | null
+  status: OrderStatus
+  closeReason: OrderCloseReason | null
+  createdAt: string
+  expireAt: string
+  paidAt: string | null
+  closedAt: string | null
 }

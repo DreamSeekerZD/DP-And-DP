@@ -210,6 +210,11 @@ onMounted(load)
           >
             <el-button size="small">编辑</el-button>
           </RouterLink>
+          <RouterLink
+            :to="{ name: 'performance-orders', params: { id: item.id } }"
+          >
+            <el-button size="small">查看订单</el-button>
+          </RouterLink>
           <el-button
             v-if="item.status === 'DRAFT'"
             size="small"

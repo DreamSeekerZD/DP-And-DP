@@ -58,6 +58,12 @@ const router = createRouter({
       meta: { requiresOperator: true },
     },
     {
+      path: '/operator/performances/:id/orders',
+      name: 'performance-orders',
+      component: () => import('@/views/operator/PerformanceOrdersView.vue'),
+      meta: { requiresOperator: true },
+    },
+    {
       path: '/:pathMatch(.*)*',
       name: 'not-found',
       component: () => import('@/views/NotFoundView.vue'),

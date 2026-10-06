@@ -312,8 +312,8 @@ watch(performanceId, () => void load(), { immediate: true })
         type="info"
         :closable="false"
         show-icon
-        title="模拟支付将在下一阶段开放"
-        description="当前可以下单占票，但还没有付款入口，也不会生成票号。下单后请在支付截止时间前到「我的订单」查看；超时未处理的名额会由服务端关闭并释放。"
+        title="模拟支付"
+        description="下单后请在支付截止时间前到「我的订单」完成付款。模拟支付不产生真实资金，也不会生成电子核销码；超时未处理的名额会由服务端关闭并释放。"
       />
     </template>
   </div>
