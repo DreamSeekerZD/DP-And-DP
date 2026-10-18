@@ -1,6 +1,13 @@
 # 文档不入库（按约定：只推业务代码）
 docs/
 
+# 压测、调试与脚本产物（不再追踪）
+http/
+performance/
+sql/
+README.md
+# jmeter.log 已被下方 *.log 覆盖
+
 # IDE
 .idea/
 *.iml
