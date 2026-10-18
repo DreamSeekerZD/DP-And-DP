@@ -21,7 +21,7 @@ const router = useRouter()
 /** 路由参数可能是数组；统一取字符串，**始终不转 Number** */
 const performanceId = computed(() => {
   const raw = route.params.id
-  return typeof raw === 'string' ? raw : (raw[0] ?? '')
+  return typeof raw === 'string' ? raw : (Array.isArray(raw) ? (raw[0] ?? '') : '')
 })
 
 const performance = ref<Performance | null>(null)
@@ -79,17 +79,80 @@ async function load(): Promise<void> {
 const placing = ref(false)
 /** 下单结果提示（留在页面上，不用一闪而过的 toast 承担） */
 const placeMessage = ref('')
-/** 下单结果不确定时出现「查看该演出的订单」，由本页带 performanceId 的查询入口承担 */
-const uncertain = ref(false)
+/**
+ * 下单后的「本页购买是否被禁用」状态（B05 Redis 异步下单的反馈合同）：
+ * - 'processing'：ORDER_PROCESSING，已占用但暂无订单 → 提示稍后到我的订单确认；
+ * - 'unknown'：ORDER_RESULT_UNKNOWN / 网络超时 / 其它 503 → 结果不确定，先查订单；
+ * - 'none'：不阻塞（成功、售罄、暂不可购买、业务拒绝等）。
+ * 阻塞只存在本组件的这一次生命周期里：不落任何全局/持久存储，
+ * 手动刷新或离开重进（重新挂载）即恢复初始状态，可再次主动尝试。
+ */
+type PlacementBlockState = 'processing' | 'unknown' | 'none'
+const placementBlock = ref<PlacementBlockState>('none')
+const placementBlocked = computed(() => placementBlock.value !== 'none')
+
+/**
+ * 按 B05 HTTP 合同把下单错误映射成本页反馈。
+ * 只在这里决定「提示文案 + 是否阻塞本页购买」；请求层不自动重放 POST。
+ */
+function applyPlaceError(error: unknown): void {
+  if (error instanceof ApiError) {
+    if (error.status === 0) {
+      // 网络超时/中断：结果未知，先查订单，不能承诺失败，更不能自动重发
+      placementBlock.value = 'unknown'
+      placeMessage.value = '下单结果待确认：网络或服务可能出现异常。请先到「我的订单」核对是否已生成订单。'
+      return
+    }
+    if (error.status === 503 && error.code === 'ORDER_RESULT_UNKNOWN') {
+      placementBlock.value = 'unknown'
+      placeMessage.value = '下单结果未知：服务处理结果不确定。请先到「我的订单」核对是否已生成订单。'
+      return
+    }
+    if (error.status === 503 && error.code !== 'ORDER_ADMISSION_UNAVAILABLE') {
+      // 其它 503（如 SERVICE_BUSY）：同样结果不确定，先查订单
+      placementBlock.value = 'unknown'
+      placeMessage.value = '服务暂时不可用，下单结果待确认。请先到「我的订单」核对是否已生成订单。'
+      return
+    }
+    if (error.status === 503) {
+      // ORDER_ADMISSION_UNAVAILABLE：明确暂不可准入，结束 loading，不阻塞再次尝试
+      placementBlock.value = 'none'
+      placeMessage.value = error.message || '当前演出暂不可购买，请稍后再试。'
+      return
+    }
+    if (error.status === 409 && error.code === 'ORDER_PROCESSING') {
+      placementBlock.value = 'processing'
+      placeMessage.value = '下单正在处理，请稍后到「我的订单」确认。'
+      return
+    }
+    if (error.status === 409 && error.code === 'STOCK_INSUFFICIENT') {
+      placementBlock.value = 'none'
+      placeMessage.value = error.message || '演出已售罄。'
+      return
+    }
+    if (error.status === 401) {
+      placementBlock.value = 'none'
+      placeMessage.value = '登录已失效，请重新登录后再购买'
+      return
+    }
+    // 其它（如 409 PERFORMANCE_NOT_SALEABLE、参数、404 等）：明确原因，不阻塞
+    placementBlock.value = 'none'
+    placeMessage.value = error.message
+    return
+  }
+  placementBlock.value = 'none'
+  placeMessage.value = '下单失败，请稍后重试'
+}
 
 /**
  * 下单入口。
  * 匿名 → 引导登录后回详情，**不自动下单**；运营 → 页面不展示购买按钮。
- * 下单结果不确定的网络/超时/503 错误 → 提示先查看我的订单，**绝不自动重放 POST**。
+ * 处理中 / 结果未知 / 超时之后，本页购买保持禁用并提供「我的订单」入口，
+ * **查询为空不自动解锁**；手动刷新或离开重进（重新挂载）才允许再次主动尝试。
  * 返回/离开期间响应不应把用户强行带回旧详情：发起前记录原地址，回来后核对。
  */
 async function handleBuy(): Promise<void> {
-  if (placing.value) return
+  if (placing.value || placementBlocked.value) return
 
   if (!auth.isLoggedIn) {
     await router.push({ name: 'login', query: { redirect: route.fullPath } })
@@ -102,7 +165,7 @@ async function handleBuy(): Promise<void> {
 
   const fromPath = route.fullPath
   placeMessage.value = ''
-  uncertain.value = false
+  placementBlock.value = 'none'
   placing.value = true
 
   try {
@@ -120,29 +183,10 @@ async function handleBuy(): Promise<void> {
   } catch (error) {
     if (route.fullPath !== fromPath) return
 
-    placeMessage.value = describePlaceError(error)
+    applyPlaceError(error)
   } finally {
     placing.value = false
   }
-}
-
-function describePlaceError(error: unknown): string {
-  if (error instanceof ApiError) {
-    if (error.status === 0 || error.status === 503) {
-      // 结果不确定：可能是超时、网络中断或服务端繁忙，不能承诺失败，更不能自动重发
-      uncertain.value = true
-      return '下单结果待确认：网络或服务可能出现问题，请先查看「我的订单」核对是否已生成订单。'
-    }
-    if (error.status === 401) {
-      return '登录已失效，请重新登录后再购买'
-    }
-    if (error.status === 409) {
-      // STOCK_INSUFFICIENT / PERFORMANCE_NOT_SALEABLE：业务明确失败，展示后端说明
-      return error.message
-    }
-    return error.message
-  }
-  return '下单失败，请稍后重试'
 }
 
 // 直接在详情之间跳转时 id 会变，重新拉取即可
@@ -257,13 +301,17 @@ watch(performanceId, () => void load(), { immediate: true })
             v-if="auth.isUser"
             type="primary"
             :loading="placing"
-            :disabled="placing"
+            :disabled="placing || placementBlocked"
             @click="handleBuy"
           >
             购买一张
           </el-button>
           <!-- 匿名：引导登录后回本页，不自动下单 -->
-          <el-button v-else-if="!auth.isLoggedIn" :disabled="placing" @click="handleBuy">
+          <el-button
+            v-else-if="!auth.isLoggedIn"
+            :disabled="placing || placementBlocked"
+            @click="handleBuy"
+          >
             登录后购买
           </el-button>
         </div>
@@ -281,22 +329,23 @@ watch(performanceId, () => void load(), { immediate: true })
           title="运营账号无法购买"
           description="请使用普通用户账号登录后购买。演示账号见 backend/sql/README.md。"
         />
-
-        <el-alert
-          v-if="placeMessage"
-          class="buy__notice"
-          type="warning"
-          :title="placeMessage"
-          :closable="false"
-          show-icon
-        >
-          <template v-if="uncertain" #default>
-            <RouterLink :to="{ name: 'my-orders', query: { performanceId: performance.id } }">
-              <el-button size="small">查看该演出的订单</el-button>
-            </RouterLink>
-          </template>
-        </el-alert>
       </div>
+
+      <!-- 页面级下单反馈：处理中/结果未知/售罄/暂不可购买等，不随购买区隐藏 -->
+      <el-alert
+        v-if="placeMessage"
+        class="notice"
+        type="warning"
+        :title="placeMessage"
+        :closable="false"
+        show-icon
+      >
+        <template v-if="placementBlocked" #default>
+          <RouterLink :to="{ name: 'my-orders', query: { performanceId: performance.id } }">
+            <el-button size="small">查看该演出的订单</el-button>
+          </RouterLink>
+        </template>
+      </el-alert>
 
       <section class="detail__section">
         <h2 class="detail__label">演出介绍</h2>
@@ -442,6 +491,11 @@ watch(performanceId, () => void load(), { immediate: true })
 
 .buy__notice {
   margin-top: 12px;
+}
+
+/* 页面级下单反馈（处理中/未知/售罄等），在 `.buy` 区之外、不受购买区显示与否影响 */
+.notice {
+  margin-top: 14px;
 }
 
 .detail__notice {

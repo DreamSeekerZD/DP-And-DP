@@ -22,7 +22,7 @@ const auth = useAuthStore()
 /** 演出编号始终是字符串，不转 Number */
 const performanceId = computed(() => {
   const raw = route.params.id
-  return typeof raw === 'string' ? raw : (raw[0] ?? '')
+  return typeof raw === 'string' ? raw : (Array.isArray(raw) ? (raw[0] ?? '') : '')
 })
 
 /** 演出信息走运营详情接口：草稿/发布/下架都能看，不依赖公开详情（下架即 404） */

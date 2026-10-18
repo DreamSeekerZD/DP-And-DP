@@ -21,7 +21,7 @@ const auth = useAuthStore()
 /** 订单号始终是字符串，不转 Number */
 const orderId = computed(() => {
   const raw = route.params.id
-  return typeof raw === 'string' ? raw : (raw[0] ?? '')
+  return typeof raw === 'string' ? raw : (Array.isArray(raw) ? (raw[0] ?? '') : '')
 })
 
 const order = ref<Order | null>(null)
