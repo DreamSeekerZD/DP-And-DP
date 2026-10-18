@@ -78,6 +78,12 @@ public interface OrderMapper extends BaseMapper<TicketOrder> {
                      @Param("closedAt") LocalDateTime closedAt);
 
     /**
+     * 离线维护专用：某场演出的全部有效订单（待支付/已支付），用于重建 Redis 预占。
+     * 只读，不参与任何下单/关闭路径。
+     */
+    List<TicketOrder> selectActiveForReconstruction(@Param("performanceId") Long performanceId);
+
+    /**
      * 超时扫描候选：已到支付截止时间但仍待支付的订单号。
      * 按 (expire_at, id) 稳定排序，LIMIT 上限不使用 OFFSET，
      * 下一轮从头再扫，避免翻页期间漏单。

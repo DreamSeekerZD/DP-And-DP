@@ -37,6 +37,10 @@
         <it.db.url></it.db.url>
         <it.db.username></it.db.username>
         <it.db.password></it.db.password>
+
+        <!-- 真实 Redis 集成测试的连接参数，默认留空；留空时测试用具类回退到本机 127.0.0.1:6379 无密码 -->
+        <it.redis.host></it.redis.host>
+        <it.redis.port></it.redis.port>
     </properties>
 
     <dependencies>
@@ -74,6 +78,13 @@
             <groupId>org.mapstruct</groupId>
             <artifactId>mapstruct</artifactId>
             <version>${mapstruct.version}</version>
+        </dependency>
+
+        <!-- B05：Redis 预占组件（Lua 原子预占/精准释放）。
+             版本由 Boot BOM 统一管理；当前只在 OrderReservationStore 及其 IT 中使用，未接通业务下单入口。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
         </dependency>
 
         <dependency>
@@ -160,6 +171,49 @@
                                 <it.db.url>${it.db.url}</it.db.url>
                                 <it.db.username>${it.db.username}</it.db.username>
                                 <it.db.password>${it.db.password}</it.db.password>
+                            </systemPropertyVariables>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <id>integration-test</id>
+                                <goals>
+                                    <goal>integration-test</goal>
+                                </goals>
+                            </execution>
+                            <execution>
+                                <id>verify</id>
+                                <goals>
+                                    <goal>verify</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <!--
+          真实 Redis 集成测试（OrderReservationStoreIT，B05-A 独立组件段）。
+          只在显式启用该 profile 时才绑定 failsafe，当前只包含本段新增的
+          OrderReservationStoreIT；B05-B 接入业务后再扩充 include。
+          `mvn -B test` 不受影响（不绑定 failsafe）；`mvn -B -Predis-it verify`
+          会运行该 IT，真实 Redis 不可达时由 AbstractRedisIT 守卫抛异常硬失败，不静默 skip。
+        -->
+        <profile>
+            <id>redis-it</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-failsafe-plugin</artifactId>
+                        <configuration>
+                            <includes>
+                                <include>**/OrderReservationStoreIT.java</include>
+                            </includes>
+                            <failIfNoTests>true</failIfNoTests>
+                            <systemPropertyVariables>
+                                <it.redis.host>${it.redis.host}</it.redis.host>
+                                <it.redis.port>${it.redis.port}</it.redis.port>
                             </systemPropertyVariables>
                         </configuration>
                         <executions>

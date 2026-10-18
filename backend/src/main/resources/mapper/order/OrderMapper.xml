@@ -131,6 +131,19 @@
     </update>
 
     <!--
+      离线维护专用：某场演出的有效订单（status 0/1）。只读，重建 Redis 预占时使用。
+      score 约定：维护恢复用 order.created_at 作为 ZSet score（非原始预占时间），
+      因此本查询只取维持重建所需的最小列集。
+    -->
+    <select id="selectActiveForReconstruction" resultMap="orderMap">
+        SELECT id, user_id, performance_id, created_at, expire_at, status
+        FROM ticket_order
+        WHERE performance_id = #{performanceId}
+        AND status IN (0, 1) /* 0 = PENDING_PAYMENT, 1 = PAID */
+        ORDER BY user_id
+    </select>
+
+    <!--
       超时扫描候选：已到截止时间且仍待支付。
       按 (expire_at, id) 稳定排序、LIMIT 上限、不用 OFFSET：下一轮从头再扫，
       已经关闭的单不再是候选，因此不会漏单也不会重复处理。
