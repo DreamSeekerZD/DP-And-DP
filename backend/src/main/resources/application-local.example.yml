@@ -1,0 +1,28 @@
+# 本地配置模板。
+#
+# 使用方式：
+#   1. 复制本文件为同目录（或 backend 根目录）下的 application-local.yml；
+#   2. 把下面三项换成你自己的 MySQL 连接信息；
+#   3. application-local.yml 已被 .gitignore 忽略，不会提交到仓库。
+#
+# 不要把真实密码写回本示例文件，也不要提交任何包含密码的配置。
+#
+# 建库与导入演示数据见 backend/sql/README.md。
+# 数据库名必须是 ticket_trade_local（人工演示库）；测试库另用 ticket_trade_test，
+# 集成测试拒绝连接非 ticket_trade_test 的库，避免误写人工数据。
+spring:
+  datasource:
+    # connectionTimeZone=UTC：连接层统一按 UTC 解释 DATETIME，
+    # 与「应用与数据库的时间约定统一 UTC」一致。
+    # allowPublicKeyRetrieval=true：本地 MySQL 8 默认 caching_sha2_password，
+    # 在未启用 SSL 的本地连接下需要该参数，否则首次连接会报公钥获取失败。
+    url: jdbc:mysql://localhost:3306/ticket_trade_local?useUnicode=true&characterEncoding=utf8&connectionTimeZone=UTC&useSSL=false&allowPublicKeyRetrieval=true
+    username: 你的MySQL账号
+    password: 你的MySQL密码
+  data:
+    redis:
+      # B05 Redis 预占组件连接配置（本地默认 127.0.0.1:6379、无密码）。
+      # 用于同步下单预占及离线维护；新演出需先完成维护初始化。
+      # 本模板不含密码字段；若你的本地 Redis 设了 requirepass，在这里补 password 即可（不要提交真实密码）。
+      host: 127.0.0.1
+      port: 6379

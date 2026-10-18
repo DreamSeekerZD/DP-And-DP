@@ -1,0 +1,11 @@
+# 依赖与构建产物
+node_modules/
+dist/
+.vite/
+
+# 本地覆盖配置
+*.local
+
+# 测试与工具缓存
+coverage/
+*.log

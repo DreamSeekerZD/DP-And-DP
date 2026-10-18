@@ -31,3 +31,9 @@ dist/
 .env.*
 application-local.yml
 *.log
+
+# 本地测试资产按用户约定保留，不随分支提交
+/backend/src/test/
+/frontend/tests/
+# application.yml、application-local.example.yml、application-maintenance.yml
+# 以及 frontend/vite.config.ts 均正常跟踪；真实 application-local.yml 继续忽略。

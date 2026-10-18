@@ -1,0 +1,19 @@
+# 离线维护 profile（B05）：配合 OrderReservationMaintenanceRunner 使用。
+# 采用本 profile 时：
+#   * 不启动 Web 服务器（web-application-type: none）；
+#   * 不启动订单超时自动扫描（timeout-scan-enabled: false）。
+# 它本身不触发任何维护动作——真正动作由命令行参数
+#   --app.maintenance.mode=audit|apply --app.maintenance.performance-id=<id>
+# 决定；参数缺失时应用按常规启动（无 Web、无调度）。
+spring:
+  main:
+    web-application-type: none
+
+ticket:
+  order:
+    timeout-scan-enabled: false
+
+logging:
+  level:
+    root: info
+    com.zddp.ticket: info

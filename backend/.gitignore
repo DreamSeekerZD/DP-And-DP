@@ -1,0 +1,33 @@
+# 构建产物
+target/
+*.class
+*.jar
+!.mvn/wrapper/maven-wrapper.jar
+
+# 本地配置：包含数据库密码，绝不提交
+application-local.yml
+src/main/resources/application-local.yml
+
+# HTTP 客户端的私密变量文件：包含真实演示密码，绝不提交
+# （公开模板是 http/http-client.env.json，里面只有占位符）
+http/http-client.private.env.json
+
+# 集成测试本地连接参数（如使用文件方式提供）
+it-local.properties
+
+# 日志
+*.log
+logs/
+
+# B04 性能压测：本地凭据、生成的用户 CSV、单次运行产物与离线测试输出都不提交
+performance/jmeter/baseline.properties
+performance/jmeter/baseline.credentials.properties
+performance/jmeter/users.csv
+performance/jmeter/runs/
+performance/jmeter/manifest*.json
+performance/jmeter/tests/loadcheck.*
+performance/jmeter/tests/fixtures/out/
+performance/jmeter/tests/out/
+performance/jmeter/tests/stub-requests.log
+performance/jmeter/tests/stub-mode.txt
+performance/jmeter/tests/stub-users.csv
